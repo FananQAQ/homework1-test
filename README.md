@@ -32,6 +32,7 @@
 - `tests/`：评测脚本
 - `data/appointment_cert_dataset.jsonl`：200 条数据集
 - `docs/`：编译、性能、准确度、技术总结文档
+- `lanucher/main.c`：用于双击根目录下的 `local_llm.exe` 即可执行测试
 
 运行后自动生成（已被 `.gitignore` 忽略）：
 

@@ -1,0 +1,19 @@
+# Self-contained package: do not commit generated / large artifacts
+llama.cpp/
+build/
+models/*.gguf
+test_results/
+
+*.gguf
+local_llm.exe
+launcher/*.obj
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.log
+*.tmp
+out/
+cmake-build-*/

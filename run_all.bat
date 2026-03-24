@@ -21,6 +21,8 @@ set "DATASET=%ROOT%\data\appointment_cert_dataset.jsonl"
 set "GGUF_NAME=SmolLM2-135M-Instruct-Q4_0.gguf"
 set "GGUF_URL=https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/%GGUF_NAME%"
 set "MODEL_PATH=%MODEL_DIR%\%GGUF_NAME%"
+set "MODEL_PATH_REL=models\%GGUF_NAME%"
+set "MODEL_TMP=%MODEL_PATH%.part"
 
 if not defined LLAMA_REPO set "LLAMA_REPO=https://github.com/ggerganov/llama.cpp.git"
 
@@ -69,8 +71,32 @@ if exist "%LLAMA_DIR%\build\bin\Release\llama-completion.exe" (
   echo [2] Found llama.cpp\build\...\llama-completion.exe, skip package CMake.
   goto after_build
 )
+set "VSW=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSW%" set "VSW=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VSDIR="
+if exist "%VSW%" for /f "usebackq delims=" %%i in (`"%VSW%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+
+set "USE_VS_GENERATOR=0"
+if defined VSDIR (
+  if not defined CMAKE_GENERATOR (
+    set "USE_VS_GENERATOR=1"
+  )
+)
+where cl >nul 2>&1
+if errorlevel 1 (
+  if defined VSDIR if exist "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" (
+    echo [2] Load MSVC toolchain via vcvars64.bat ...
+    call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+  )
+)
 echo [2] CMake package + build local_llm_exe ...
-cmake -S "%ROOT%" -B "%BUILD_ROOT%"
+if "%USE_VS_GENERATOR%"=="1" (
+  if exist "%BUILD_ROOT%\CMakeCache.txt" del /q "%BUILD_ROOT%\CMakeCache.txt" >nul 2>&1
+  if exist "%BUILD_ROOT%\CMakeFiles" rmdir /s /q "%BUILD_ROOT%\CMakeFiles" >nul 2>&1
+  cmake -S "%ROOT%" -B "%BUILD_ROOT%" -G "Visual Studio 17 2022" -A x64
+) else (
+  cmake -S "%ROOT%" -B "%BUILD_ROOT%"
+)
 if errorlevel 1 (
   echo [WARN] CMake failed, try llama.cpp\build exe.
   goto after_build
@@ -102,11 +128,24 @@ if /i "%_EXENAME%"=="llama-completion.exe" (
 echo [INFO] EXE=%EXE%
 
 if not exist "%MODEL_DIR%" mkdir "%MODEL_DIR%"
-if exist "%MODEL_PATH%" goto have_model
+if exist "%MODEL_PATH%" (
+  for %%A in ("%MODEL_PATH%") do (
+    if %%~zA gtr 0 goto have_model
+  )
+  echo [WARN] Existing GGUF is empty, re-download.
+  del /q "%MODEL_PATH%" >nul 2>&1
+)
 echo [3] Download GGUF ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%GGUF_URL%' -OutFile '%MODEL_PATH%' -UseBasicParsing"
+if exist "%MODEL_TMP%" del /q "%MODEL_TMP%" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '%GGUF_URL%' -OutFile '%MODEL_TMP%' -UseBasicParsing"
 if errorlevel 1 (
   echo [ERR] Download failed.
+  goto fail
+)
+move /Y "%MODEL_TMP%" "%MODEL_PATH%" >nul
+if errorlevel 1 (
+  echo [ERR] Cannot replace "%MODEL_PATH%". File may be used by another running process.
+  echo [HINT] Close other run_all.bat/local_llm processes and retry.
   goto fail
 )
 :have_model
@@ -147,14 +186,14 @@ echo. >> "%REPORT%"
 echo [A] inference smoke >> "%REPORT%"
 echo. >> "%REPORT%"
 
-"%EXE%" -m "%MODEL_PATH%" -no-cnv -p "Hello" -n 32 -ngl 0 --perf >> "%REPORT%" 2>&1
+"%EXE%" -m "%MODEL_PATH_REL%" -no-cnv -p "Hello" -n 32 -ngl 0 --perf >> "%REPORT%" 2>&1
 
 echo. >> "%REPORT%"
 echo [B] llama-bench >> "%REPORT%"
 echo. >> "%REPORT%"
 
 if exist "%BENCH%" (
-  "%BENCH%" -m "%MODEL_PATH%" -ngl 0 -p 64 -n 64 -r 2 -o md >> "%REPORT%" 2>&1
+  "%BENCH%" -m "%MODEL_PATH_REL%" -ngl 0 -p 64 -n 64 -r 2 -o md >> "%REPORT%" 2>&1
 ) else (
   echo [SKIP] llama-bench.exe not found >> "%REPORT%"
 )
@@ -170,7 +209,7 @@ echo. >> "%REPORT%"
 if /i not "%SKIP_PIP_MPL%"=="1" (
   python -m pip install -q -r "%ROOT%\requirements.txt" 2>nul
 )
-python "%ROOT%\tests\perf_smoke_test.py" --root "%ROOT%" --exe "%EXE%" --model "%MODEL_PATH%" --out-dir "%RUN_DIR%" --append-text-report "%REPORT%"
+python "%ROOT%\tests\perf_smoke_test.py" --root "%ROOT%" --exe "%EXE%" --model "%MODEL_PATH_REL%" --out-dir "%RUN_DIR%" --append-text-report "%REPORT%"
 :no_py
 
 if /i "%SKIP_ACCURACY%"=="1" goto no_acc
@@ -184,9 +223,9 @@ echo. >> "%REPORT%"
 echo [D] accuracy_eval data\appointment_cert_dataset.jsonl >> "%REPORT%"
 echo. >> "%REPORT%"
 if defined ACCURACY_LIMIT (
-  python "%ROOT%\tests\accuracy_eval.py" --exe "%EXE%" --model "%MODEL_PATH%" --dataset "%DATASET%" --limit %ACCURACY_LIMIT% --out-json "%RUN_DIR%\accuracy_full.json" --out-txt "%RUN_DIR%\accuracy_summary.txt"
+  python "%ROOT%\tests\accuracy_eval.py" --exe "%EXE%" --model "%MODEL_PATH_REL%" --dataset "%DATASET%" --limit %ACCURACY_LIMIT% --out-json "%RUN_DIR%\accuracy_full.json" --out-txt "%RUN_DIR%\accuracy_summary.txt"
 ) else (
-  python "%ROOT%\tests\accuracy_eval.py" --exe "%EXE%" --model "%MODEL_PATH%" --dataset "%DATASET%" --out-json "%RUN_DIR%\accuracy_full.json" --out-txt "%RUN_DIR%\accuracy_summary.txt"
+  python "%ROOT%\tests\accuracy_eval.py" --exe "%EXE%" --model "%MODEL_PATH_REL%" --dataset "%DATASET%" --out-json "%RUN_DIR%\accuracy_full.json" --out-txt "%RUN_DIR%\accuracy_summary.txt"
 )
 if exist "%RUN_DIR%\accuracy_summary.txt" type "%RUN_DIR%\accuracy_summary.txt" >> "%REPORT%"
 :no_acc

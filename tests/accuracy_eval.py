@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import locale
 import re
 import subprocess
 import sys
@@ -50,15 +51,19 @@ def load_jsonl(path: Path) -> list[dict]:
 
 def build_prompt(text: str) -> str:
     return (
-        "任务：判断下面这段「任命证书」在中文表达与常识逻辑上是否合理。"
-        "若整体通顺且职务、时间、主体无明显矛盾，回答：合理。"
-        "否则回答：不合理。只输出一个词：合理 或 不合理，不要解释。\n\n"
-        f"文书：\n{text}\n\n答案："
+        "Task: classify whether the following appointment certificate text is reasonable.\n"
+        "Output exactly one character only:\n"
+        "1 = reasonable, 0 = unreasonable.\n"
+        "Do not output any other words.\n\n"
+        f"Text:\n{text}\n\nAnswer (1 or 0):"
     )
 
 
 def parse_prediction(raw: str) -> int | None:
     """Return 1 if 合理, 0 if 不合理, None if unknown."""
+    m = re.search(r"^\s*([01])(?:\s*$|[\s。.!?，,；;])", raw)
+    if m:
+        return int(m.group(1))
     s = raw.replace(" ", "").lower()
     # Prefer longer match first
     if "不合理" in raw or "notreasonable" in s or "invalid" in s:
@@ -72,7 +77,16 @@ def parse_prediction(raw: str) -> int | None:
     return None
 
 
-def run_llm(exe: Path, model: Path, prompt: str, n_predict: int, ngl: int) -> str:
+def _decode_best_effort(raw: bytes) -> str:
+    for enc in ("utf-8", locale.getpreferredencoding(False), "gb18030"):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            pass
+    return raw.decode("utf-8", errors="replace")
+
+
+def run_llm(exe: Path, model: Path, prompt: str, n_predict: int, ngl: int) -> tuple[str, str]:
     cmd = [
         str(exe),
         "-m",
@@ -89,14 +103,25 @@ def run_llm(exe: Path, model: Path, prompt: str, n_predict: int, ngl: int) -> st
     proc = subprocess.run(
         cmd,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        text=False,
     )
-    return (proc.stdout or "") + "\n" + (proc.stderr or "")
+    return _decode_best_effort(proc.stdout or b""), _decode_best_effort(proc.stderr or b"")
 
 
-def extract_answer_tail(combined: str, prompt_marker: str = "答案：") -> str:
+def extract_answer_tail(
+    stdout_text: str,
+    stderr_text: str,
+    prompt_text: str,
+    prompt_marker: str = "Answer (1 or 0):",
+) -> str:
+    # Prefer model generation text (stdout). stderr often contains perf logs only.
+    if prompt_marker in stdout_text:
+        return stdout_text.split(prompt_marker, 1)[-1][-400:]
+    if prompt_text and prompt_text in stdout_text:
+        return stdout_text.split(prompt_text, 1)[-1][-400:]
+    if stdout_text.strip():
+        return stdout_text[-400:]
+    combined = stdout_text + "\n" + stderr_text
     if prompt_marker in combined:
         return combined.split(prompt_marker, 1)[-1][-400:]
     return combined[-400:]
@@ -141,9 +166,9 @@ def evaluate(
         y = int(row["label"])
         pr = build_prompt(row["text"])
         t0 = time.perf_counter()
-        out = run_llm(exe, model, pr, n_predict, ngl)
+        out_stdout, out_stderr = run_llm(exe, model, pr, n_predict, ngl)
         dt = time.perf_counter() - t0
-        tail = extract_answer_tail(out)
+        tail = extract_answer_tail(out_stdout, out_stderr, pr)
         pred = parse_prediction(tail)
         details.append(
             {

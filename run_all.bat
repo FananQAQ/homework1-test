@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 REM Self-contained package: ROOT = this folder (f). Same pipeline as parent hmwk used to run.
 REM Optional env: SKIP_BUILD=1  SKIP_PERF_PY=1  SKIP_PIP_MPL=1  SKIP_ACCURACY=1  ACCURACY_LIMIT=N
-REM SKIP_ROOT_LAUNCHER=1  skip building package-root local_llm.exe launcher at end
+REM Accuracy tuning: ACC_N_PREDICT=16 (default)  ACC_NGL=0 (set 999 for GPU)
 REM HMwkLauncher=1  set by package-root launcher; do not rebuild while it is running
 
 set "ROOT=%~dp0"
@@ -23,6 +23,10 @@ set "GGUF_URL=https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolv
 set "MODEL_PATH=%MODEL_DIR%\%GGUF_NAME%"
 set "MODEL_PATH_REL=models\%GGUF_NAME%"
 set "MODEL_TMP=%MODEL_PATH%.part"
+set "ACC_N_PREDICT=16"
+if defined ACC_N_PREDICT set "ACC_N_PREDICT=%ACC_N_PREDICT%"
+set "ACC_NGL=0"
+if defined ACC_NGL set "ACC_NGL=%ACC_NGL%"
 
 if not defined LLAMA_REPO set "LLAMA_REPO=https://github.com/ggerganov/llama.cpp.git"
 
@@ -223,9 +227,9 @@ echo. >> "%REPORT%"
 echo [D] accuracy_eval data\appointment_cert_dataset.jsonl >> "%REPORT%"
 echo. >> "%REPORT%"
 if defined ACCURACY_LIMIT (
-  python "%ROOT%\tests\accuracy_eval.py" --exe "%EXE%" --model "%MODEL_PATH_REL%" --dataset "%DATASET%" --limit %ACCURACY_LIMIT% --out-json "%RUN_DIR%\accuracy_full.json" --out-txt "%RUN_DIR%\accuracy_summary.txt"
+  python "%ROOT%\tests\accuracy_eval.py" --exe "%EXE%" --model "%MODEL_PATH_REL%" --dataset "%DATASET%" --n-predict %ACC_N_PREDICT% --ngl %ACC_NGL% --limit %ACCURACY_LIMIT% --out-json "%RUN_DIR%\accuracy_full.json" --out-txt "%RUN_DIR%\accuracy_summary.txt"
 ) else (
-  python "%ROOT%\tests\accuracy_eval.py" --exe "%EXE%" --model "%MODEL_PATH_REL%" --dataset "%DATASET%" --out-json "%RUN_DIR%\accuracy_full.json" --out-txt "%RUN_DIR%\accuracy_summary.txt"
+  python "%ROOT%\tests\accuracy_eval.py" --exe "%EXE%" --model "%MODEL_PATH_REL%" --dataset "%DATASET%" --n-predict %ACC_N_PREDICT% --ngl %ACC_NGL% --out-json "%RUN_DIR%\accuracy_full.json" --out-txt "%RUN_DIR%\accuracy_summary.txt"
 )
 if exist "%RUN_DIR%\accuracy_summary.txt" type "%RUN_DIR%\accuracy_summary.txt" >> "%REPORT%"
 :no_acc
@@ -283,3 +287,7 @@ echo.
 pause
 endlocal
 exit /b 0
+
+
+
+
